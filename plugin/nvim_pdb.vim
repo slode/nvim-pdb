@@ -6,9 +6,17 @@ let s:max_breakpoint_sign_id = 0
 
 let s:PdbRunning = vimexpect#State([
       \ ['\v^\> ([^(]+)\((\d+)\)', 'jump'],
+      \ ['c\s*$', 'running'],
+      \ ['cont\s*$', 'running'],
+      \ ['continue\s*$', 'running'],
       \ ])
 
+function s:PdbRunning.running(...)
+  let self._running = 1
+endfunction
+
 function s:PdbRunning.jump(file, line, ...)
+  let self._running = 0
   if tabpagenr() != self._tab
     " Don't jump if we are not in the debugger tab
     return
@@ -86,6 +94,7 @@ function! s:Spawn(client_cmd)
   let pdb._current_line = -1
   let pdb._has_breakpoints = 0 
   let pdb._cmd = a:client_cmd
+  let pdb._running = 0
 
   " Create new tab for the debugging view
   tabnew
@@ -152,11 +161,12 @@ function! s:RefreshBreakpoints()
   if !exists('g:pdb')
     return
   endif
-  s:Interrupt()
+
+  call s:Interrupt()
 
   if g:pdb._has_breakpoints
     call g:pdb.send('clear')
-    call g:pdb.send('y'))
+    call g:pdb.send('y')
   endif
 
   let g:pdb._has_breakpoints = 0
@@ -168,6 +178,20 @@ function! s:RefreshBreakpoints()
   endfor
 endfunction
 
+function! s:PrintBreakpoints()
+  if !exists('g:pdb')
+    return
+  endif
+
+  let g:pdb._has_breakpoints = 0
+  for [file, breakpoints] in items(s:breakpoints)
+    for linenr in keys(breakpoints)
+      echo file . ":" . linenr
+    endfor
+  endfor
+endfunction
+
+
 
 function! s:GetExpression(...) range
   let [lnum1, col1] = getpos("'<")[1:2]
@@ -175,7 +199,7 @@ function! s:GetExpression(...) range
   let lines = getline(lnum1, lnum2)
   let lines[-1] = lines[-1][:col2 - 1]
   let lines[0] = lines[0][col1 - 1:]
-  return join(lines, "\n")
+  return join(lines, " ")
 endfunction
 
 
@@ -204,16 +228,20 @@ function! s:Interrupt()
   if !exists('g:pdb')
     throw 'Pdb is not running'
   endif
-  call jobsend(g:pdb._client_id, "\<c-c>\<cr>")
+  if g:pdb._running
+    call jobsend(g:pdb._client_id, "\<c-c>")
+    sleep 2
+    let g:pdb._running = 0
+  endif
 endfunction
 
 function! s:Finish()
   if !exists('g:pdb')
     throw 'Pdb is not running'
   endif
+  call s:Interrupt()
   call jobsend(g:pdb._client_id, "\<c-d>\<cr>")
 endfunction
-
 
 function! s:Kill()
   if !exists('g:pdb')
@@ -222,12 +250,25 @@ function! s:Kill()
   call g:pdb.kill()
 endfunction
 
+function! s:Continue()
+  if !exists('g:pdb')
+    throw 'Pdb is not running'
+  endif
+  if g:pdb._running
+    call s:Interrupt()
+  else
+    let g:pdb._running = 1
+    call s:Send("c")
+  endif
+endfunction
+
 
 command! -nargs=1 -complete=shellcmd Pdb call s:Spawn(<q-args>)
 command! PdbStop call s:Kill()
 command! PdbToggleBreakpoint call s:ToggleBreak()
+command! PdbPrintBreakpoint call s:PrintBreakpoints()
 command! PdbClearBreakpoints call s:ClearBreak()
-command! PdbContinue call s:Send("c")
+command! PdbContinue call s:Continue()
 command! PdbNext call s:Send("n")
 command! PdbStep call s:Send("s")
 command! PdbFinish call s:Finish()
