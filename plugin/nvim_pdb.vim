@@ -6,17 +6,9 @@ let s:max_breakpoint_sign_id = 0
 
 let s:PdbRunning = vimexpect#State([
       \ ['\v^\> ([^(]+)\((\d+)\)', 'jump'],
-      \ ['c\s*$', 'running'],
-      \ ['cont\s*$', 'running'],
-      \ ['continue\s*$', 'running'],
       \ ])
 
-function s:PdbRunning.running(...)
-  let self._running = 1
-endfunction
-
 function s:PdbRunning.jump(file, line, ...)
-  let self._running = 0
   if tabpagenr() != self._tab
     " Don't jump if we are not in the debugger tab
     return
@@ -50,6 +42,7 @@ function s:Pdb.kill()
   try
     call jobstop(self._client_id)
   catch
+    echo "Unable to stop job " . self._cmd
   endtry
   call self.update_current_line_sign(0)
   exe 'bd! '.self._client_buf
@@ -67,7 +60,6 @@ function! s:Pdb.send(data)
     call self.kill()
   endtry
 endfunction
-
 
 function! s:Pdb.update_current_line_sign(add)
   " to avoid flicker when removing/adding the sign column(due to the change in
@@ -94,7 +86,6 @@ function! s:Spawn(client_cmd)
   let pdb._current_line = -1
   let pdb._has_breakpoints = 0 
   let pdb._cmd = a:client_cmd
-  let pdb._running = 0
 
   " Create new tab for the debugging view
   tabnew
@@ -111,7 +102,7 @@ function! s:Spawn(client_cmd)
   tnoremap <silent> <f8> <c-\><c-n>:PdbContinue<cr>i
   tnoremap <silent> <f10> <c-\><c-n>:PdbNext<cr>i
   tnoremap <silent> <f11> <c-\><c-n>:PdbStep<cr>i
-  tnoremap <silent> <f12> <c-\><c-n>:PdbFinish<cr>i
+  tnoremap <silent> <f12> <c-\><c-n>:PdbReturn<cr>i
 
   " go to the window that displays the current file
   exe pdb._jump_window 'wincmd w'
@@ -124,21 +115,21 @@ function! s:ToggleBreak()
   let linenr = line('.')
   if has_key(file_breakpoints, linenr)
     call remove(file_breakpoints, linenr)
+    call s:ClearBreakpoint(file_name, linenr)
   else
     let file_breakpoints[linenr] = 1
+    call s:AddBreakpoint(file_name, linenr)
   endif
   let s:breakpoints[file_name] = file_breakpoints
   call s:RefreshBreakpointSigns()
-  call s:RefreshBreakpoints()
+  "call s:RefreshBreakpoints()
 endfunction
-
 
 function! s:ClearBreak()
   let s:breakpoints = {}
   call s:RefreshBreakpointSigns()
   call s:RefreshBreakpoints()
 endfunction
-
 
 function! s:RefreshBreakpointSigns()
   let buf = bufnr('%')
@@ -156,17 +147,29 @@ function! s:RefreshBreakpointSigns()
   endfor
 endfunction
 
+function! s:AddBreakpoint(file, line)
+  if !exists('g:pdb')
+    return
+  endif
+
+  call g:pdb.send('break '.a:file.':'.a:line)
+endfunction
+
+function! s:ClearBreakpoint(file, line)
+  if !exists('g:pdb')
+    return
+  endif
+
+  call g:pdb.send('clear '.a:file.':'.a:line)
+endfunction
 
 function! s:RefreshBreakpoints()
   if !exists('g:pdb')
     return
   endif
 
-  call s:Interrupt()
-
   if g:pdb._has_breakpoints
-    call g:pdb.send('clear')
-    call g:pdb.send('y')
+    call g:pdb.send('clear\<cr>y')
   endif
 
   let g:pdb._has_breakpoints = 0
@@ -191,8 +194,6 @@ function! s:PrintBreakpoints()
   endfor
 endfunction
 
-
-
 function! s:GetExpression(...) range
   let [lnum1, col1] = getpos("'<")[1:2]
   let [lnum2, col2] = getpos("'>")[1:2]
@@ -201,7 +202,6 @@ function! s:GetExpression(...) range
   let lines[0] = lines[0][col1 - 1:]
   return join(lines, " ")
 endfunction
-
 
 function! s:Send(data)
   if !exists('g:pdb')
@@ -217,30 +217,7 @@ endfunction
 
 
 function! s:Watch(expr)
-  let expr = a:expr
-
-  call s:Eval(expr)
-  call s:Send('display *$')
-endfunction
-
-
-function! s:Interrupt()
-  if !exists('g:pdb')
-    throw 'Pdb is not running'
-  endif
-  if g:pdb._running
-    call jobsend(g:pdb._client_id, "\<c-c>")
-    sleep 2
-    let g:pdb._running = 0
-  endif
-endfunction
-
-function! s:Finish()
-  if !exists('g:pdb')
-    throw 'Pdb is not running'
-  endif
-  call s:Interrupt()
-  call jobsend(g:pdb._client_id, "\<c-d>\<cr>")
+  call s:Send(printf('display %s', a:expr))
 endfunction
 
 function! s:Kill()
@@ -250,45 +227,35 @@ function! s:Kill()
   call g:pdb.kill()
 endfunction
 
-function! s:Continue()
-  if !exists('g:pdb')
-    throw 'Pdb is not running'
-  endif
-  if g:pdb._running
-    call s:Interrupt()
-  else
-    let g:pdb._running = 1
-    call s:Send("c")
-  endif
-endfunction
-
-
 command! -nargs=1 -complete=shellcmd Pdb call s:Spawn(<q-args>)
 command! PdbStop call s:Kill()
 command! PdbToggleBreakpoint call s:ToggleBreak()
 command! PdbPrintBreakpoint call s:PrintBreakpoints()
 command! PdbClearBreakpoints call s:ClearBreak()
-command! PdbContinue call s:Continue()
-command! PdbNext call s:Send("n")
-command! PdbStep call s:Send("s")
+command! PdbContinue call s:Send("continue")
+command! PdbNext call s:Send("next")
+command! PdbStep call s:Send("step")
+command! PdbReturn call s:Send("return")
 command! PdbFinish call s:Finish()
 command! PdbFrameUp call s:Send("up")
 command! PdbFrameDown call s:Send("down")
-command! PdbInterrupt call s:Interrupt()
 command! PdbEvalWord call s:Eval(expand('<cword>'))
 command! -range PdbEvalRange call s:Eval(s:GetExpression(<f-args>))
-command! PdbWatchWord call s:Watch(expand('<cword>')
-command! -range PdbWatchRange call s:Watch(s:GetExpression(<f-args>))
+"command! PdbWatchWord call s:Watch(expand('<cword>')
+"command! -range PdbWatchRange call s:Watch(s:GetExpression(<f-args>))
 
 
 nnoremap <silent> <f8> :PdbContinue<cr>
 nnoremap <silent> <f10> :PdbNext<cr>
 nnoremap <silent> <f11> :PdbStep<cr>
-nnoremap <silent> <f12> :PdbFinish<cr>
+nnoremap <silent> <f12> :PdbReturn<cr>
+"nnoremap <silent> <f12> :PdbFinish<cr>
 nnoremap <silent> <c-b> :PdbToggleBreakpoint<cr>
 nnoremap <silent> <c-pageup> :PdbFrameUp<cr>
 nnoremap <silent> <c-pagedown> :PdbFrameDown<cr>
 nnoremap <silent> <f9> :PdbEvalWord<cr>
 vnoremap <silent> <f9> :PdbEvalRange<cr>
-nnoremap <silent> <c-f9> :PdbWatchWord<cr>
-vnoremap <silent> <c-f9> :PdbWatchRange<cr>
+"nnoremap <silent> <c-f9> :PdbWatchWord<cr>
+"vnoremap <silent> <c-f9> :PdbWatchRange<cr>
+
+autocmd VimLeave * silent! call s:Kill()
